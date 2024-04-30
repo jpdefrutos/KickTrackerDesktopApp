@@ -198,8 +198,7 @@ class MainInterface(QMainWindow):
 
     def _build_data_control_group_box(self) -> QGroupBox:
         group_box = QGroupBox("Data", parent=self)
-        self.show_min_max_button = QRadioButton('Show min/max', parent=group_box)
-
+        
         max_values_layout = QGridLayout()
         self.max_values_boxes = dict()
         for i, l in enumerate(["X", "Y", "Z", "ACC"]):
@@ -222,7 +221,6 @@ class MainInterface(QMainWindow):
         clear_plot_button.clicked.connect(self.clear_plot)
 
         layout = QVBoxLayout()
-        layout.addWidget(self.show_min_max_button)
         layout.addWidget(self.export_button)
         layout.addWidget(clear_plot_button)
         layout.addLayout(max_values_layout)
