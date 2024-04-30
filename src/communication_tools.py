@@ -57,7 +57,6 @@ class CommunicationSocket(QObject):
     def _on_stateChanged(self, state):
         if state == QAbstractSocket.ConnectedState:
             print("We have connection!")
-            self._send_alive_signal()
             self.run_alive_timer(True)
             self.new_status_signal.emit(LED_SOCKET_CLOSE)
         elif state == QAbstractSocket.UnconnectedState:
@@ -71,13 +70,21 @@ class CommunicationSocket(QObject):
             self.close_socket()
 
         self.socket.connectToHost(host_ip, host_port)
+
         if(not self.socket.waitForConnected(self.patientce)):
-            raise TimeoutError(f"Cannot connect to {host_ip}")
+            raise TimeoutError(f"Cannot connect to {host_port}@{host_ip}")
         else:
-            print(f"Connected to {host_ip}")
+            print(f"Connected to {host_port}@{host_ip}")
             self.run_alive_timer(True)
             self.host_ip = host_ip
             self.host_port = host_port
+
+    def reopen_socket(self):
+        if self.host_ip is None or self.host_port is None:
+            raise ValueError("Cannot reconnect. Missing information from the previos host!")
+        else:
+            self.open_socket(self.host_ip, self.host_port)
+            
 
     def close_socket(self, force: bool = False):
         if self.state == QAbstractSocket.ConnectedState:
@@ -103,11 +110,11 @@ class CommunicationSocket(QObject):
         ret_val = ()
         raw_message = self.socket.readAll()
         try:
-            ret_val = self.message_builder.parse_message(raw_message)
+            ret_val = self.message_manager.parse_message(raw_message)
         except TypeError as err:
             print(f"Error parsing {raw_message}\n{err}")
             return ret_val
-        print(f"Received the message {raw_message} from {self.host_ip}: TASK ID: {ret_val[0]}\tTASK PARAMS: {ret_val[2]}")
+        # print(f"Received the message {raw_message} from {self.host_ip}: TASK ID: {ret_val[0]}\tTASK PARAMS: {ret_val[2]}")
         self.new_message_signal.emit(ret_val)
         return ret_val
     

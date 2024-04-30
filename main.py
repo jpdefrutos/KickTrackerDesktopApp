@@ -1,21 +1,24 @@
-from PySide2.QtCore import Qt, QThreadPool, QIODevice, Slot, Signal
-from PySide2.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QSlider, QRadioButton, QLabel, QSizePolicy, QLayout, QGroupBox
-from PySide2.QtNetwork import QTcpSocket, QUdpSocket, QAbstractSocket, QHostInfo, QNetworkInterface
-import time
-import struct
+from PySide2.QtCore import Qt, QThreadPool, Slot
+from PySide2.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QSlider, QRadioButton, QLabel, QFileDialog, QLayout, QGroupBox
+from PySide2.QtNetwork import QAbstractSocket
+
 from tqdm import tqdm
 
 from pglive.sources.data_connector import DataConnector
-from pglive.sources.live_plot import LiveLinePlot
+from pglive.sources.live_plot import LiveLinePlot, LiveScatterPlot
 from pglive.sources.live_plot_widget import LivePlotWidget
 from pglive.sources.live_axis import LiveAxis
-from pglive.kwargs import Axis
+from pglive.kwargs import Axis, Crosshair
+import pyqtgraph as pg
+
 import sys
+import os
 import socket
 import re
 from enum import Enum
-import math
 import numpy as np
+import json
+import csv
 
 import sys
 sys.path.insert(0, './src')
@@ -42,7 +45,7 @@ class MainInterface(QMainWindow):
     DATA_RECEIVER_SOCKET_OPEN = False
     BOARD_READY_TO_SEND_DATA = False
 
-    GUI_STATE_VALUES = Enum("state", ["INIT", "SEARCH_BOARD", "COMMS_OPEN", "PREPARE_ACQ", "RECV_DATA", "COMMS_ERROR"])
+    GUI_STATE_VALUES = Enum("state", ["INIT", "SEARCH_BOARD", "COMMS_OPEN", "IDLE", "PREPARE_ACQ", "RECV_DATA", "COMMS_ERROR"])
     GUI_STATE = GUI_STATE_VALUES.INIT
 
     def __init__(self, parent=None, menu_width=250) -> None:
@@ -87,19 +90,20 @@ class MainInterface(QMainWindow):
         self.data_receiver_socket.new_message_signal.connect(self.update_plot)
 
         self.data_receiver = CommunicationSocket(socket_type="UDP")
+        
+        self.max_x = -100
+        self.max_y = -100
+        self.max_z = -100
+        self.max_acc = -100
 
     def _build_acquisition_control_group_box(self) -> QGroupBox:
         group_box = QGroupBox("Acquisition", parent=self)
         # Tasks layout
-        self.start_button = QPushButton('Start', parent=group_box)
-        self.start_button.setMaximumWidth(self.menu_width)
-        self.start_button.setEnabled(False)
-        self.start_button.clicked.connect(self.start_acquisition)
-
-        self.stop_button = QPushButton('Force stop', parent=group_box)
-        self.stop_button.setMaximumWidth(self.menu_width)
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_acquisition)
+        self.start_stop_button = QPushButton('Start', parent=group_box)
+        self.start_stop_button.setMaximumWidth(self.menu_width)
+        self.start_stop_button.setEnabled(False)
+        self.start_stop_button.setCheckable(True)
+        self.start_stop_button.pressed.connect(self.start_stop_acquisition)
 
         length_title = QLabel('Timer:', parent=group_box)
         length_title.setMaximumWidth(length_title.sizeHint().width())
@@ -112,9 +116,8 @@ class MainInterface(QMainWindow):
         length_layout.addWidget(self.acquisition_length)
 
         layout = QVBoxLayout()
-        layout.addWidget(self.start_button)
+        layout.addWidget(self.start_stop_button)
         layout.addLayout(length_layout)
-        layout.addWidget(self.stop_button)
         layout.setSizeConstraint(QLayout.SetMaximumSize)
         layout.addStretch(1)
 
@@ -159,18 +162,23 @@ class MainInterface(QMainWindow):
         return group_box
 
     def _build_plotter_layout(self, background='white'):
-        x_curve = LiveLinePlot(pen="red")
+        x_curve = LiveLinePlot(pen="red",)
         y_curve = LiveLinePlot(pen="green")
         z_curve = LiveLinePlot(pen="blue")
         acc_curve = LiveLinePlot(pen="black")
+        acc_curve_scatter = LiveScatterPlot(pen="black")
 
         self.data_connector_x = DataConnector(x_curve, 600, 100)
         self.data_connector_y = DataConnector(y_curve, 600, 100)
         self.data_connector_z = DataConnector(z_curve, 600, 100)
-        self.data_connector_acc = DataConnector(acc_curve, 600, 100)
-
-        time_axis = LiveAxis("bottom", **{Axis.TICK_FORMAT: Axis.TIME})
-        self.plot_widget = LivePlotWidget(parent=self, title="Acceleration", axisItem={"bottom": time_axis})
+        self.data_connector_acc = DataConnector(acc_curve, 600, 100,)
+        self.data_connector_acc_scatter = DataConnector(acc_curve_scatter, 600, 100)
+        kwargs = {Crosshair.ENABLED: True,
+                  Crosshair.LINE_PEN: pg.mkPen(color="red", width=1),
+                  Crosshair.TEXT_KWARGS: {"color": "green"},
+                  Axis.TICK_FORMAT: Axis.TIME}
+        time_axis = LiveAxis("bottom", **kwargs)
+        self.plot_widget = LivePlotWidget(parent=self, background=background, title="Acceleration", axisItem={"bottom": time_axis}, roll_on_tick=20)
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel("bottom", "Time", units="ms")
         self.plot_widget.setLabel("left", "Acceleration", units="m/s**2")
@@ -178,30 +186,46 @@ class MainInterface(QMainWindow):
         self.plot_widget.addItem(y_curve)
         self.plot_widget.addItem(z_curve)
         self.plot_widget.addItem(acc_curve)
+        self.plot_widget.addItem(acc_curve_scatter)
+        self.plot_widget.add_crosshair(crosshair_pen=pg.mkPen(color="red", width=1), crosshair_text_kwargs={"color": "green"})
 
         self.plot_widget.setMinimumWidth(800)
         self.plot_widget.setMinimumHeight(600)
 
-        self.plot_slider = QSlider(Qt.Horizontal, parent=self)
-        self.plot_slider.setEnabled(False)
-
         layout = QVBoxLayout()
         layout.addWidget(self.plot_widget)
-        layout.addWidget(self.plot_slider)
         return layout
 
     def _build_data_control_group_box(self) -> QGroupBox:
         group_box = QGroupBox("Data", parent=self)
-        show_min_max = QRadioButton('Show min/max', parent=group_box)
-        export_button = QPushButton('Export data', parent=group_box)
-        export_button.setMaximumWidth(self.menu_width)
-        clear_plot = QPushButton('Clear', parent=group_box)
-        clear_plot.setMaximumWidth(self.menu_width)
+        self.show_min_max_button = QRadioButton('Show min/max', parent=group_box)
+
+        max_values_layout = QGridLayout()
+        self.max_values_boxes = dict()
+        for i, l in enumerate(["X", "Y", "Z", "ACC"]):
+            lbl = QLabel(parent=group_box)
+            lbl.setText(f"{l}: ")
+            lbl.setMaximumWidth(lbl.sizeHint().width())
+
+            val = QLineEdit(parent=group_box)
+            val.setEnabled(False)
+            val.setMaximumWidth(self.menu_width - lbl.sizeHint().width())
+            self.max_values_boxes[l] = val
+            max_values_layout.addWidget(lbl, i, 0)
+            max_values_layout.addWidget(val, i, 1)
+
+        self.export_button = QPushButton('Export data', parent=group_box)
+        self.export_button.setMaximumWidth(self.menu_width)
+        self.export_button.clicked.connect(self.export_data)
+        clear_plot_button = QPushButton('Clear', parent=group_box)
+        clear_plot_button.setMaximumWidth(self.menu_width)
+        clear_plot_button.clicked.connect(self.clear_plot)
 
         layout = QVBoxLayout()
-        layout.addWidget(show_min_max)
-        layout.addWidget(export_button)
-        layout.addWidget(clear_plot)
+        layout.addWidget(self.show_min_max_button)
+        layout.addWidget(self.export_button)
+        layout.addWidget(clear_plot_button)
+        layout.addLayout(max_values_layout)
         layout.setSizeConstraint(QLayout.SetMaximumSize)
         layout.addStretch(1)
 
@@ -213,29 +237,20 @@ class MainInterface(QMainWindow):
         if new_state == LED_SOCKET_OPEN:
             self.COMMS_SOCKET_OPEN = True
             colour = "green"
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(True)
+            self.start_stop_button.setEnabled(True)
             self.acquisition_length.setEnabled(True)
         else:
             colour = "red"
             self.COMMS_SOCKET_OPEN = False
-            self.start_button.setEnabled(False)
-            self.stop_button.setEnabled(False)
+            self.start_stop_button.setEnabled(False)
             self.acquisition_length.setEnabled(False)
             if new_state == LED_SOCKET_WAITING:
                 colour = "yellow"
 
         self.connection_led.setStyleSheet(f"background-color: {colour}")
       
-    def detect_board(self):
-        if self.GUI_STATE != self.GUI_STATE_VALUES.INIT:
-            self.update_gui_state(self.GUI_STATE_VALUES.INIT)
-            self.search_button.setText("Search for board")
-            self.update_led_status(LED_SOCKET_CLOSE)
-            self.board_ip = None
-            self.board_port = None
-            
-        elif self.GUI_STATE == self.GUI_STATE_VALUES.INIT:
+    def detect_board(self):    
+        if self.GUI_STATE == self.GUI_STATE_VALUES.INIT:
             self.update_gui_state(self.GUI_STATE_VALUES.SEARCH_BOARD)
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 # Set socket options to allow receiving broadcasted messages
@@ -249,20 +264,31 @@ class MainInterface(QMainWindow):
                 print(f"Received {data} from {addr}")
                 parsed_task_id, _, parsed_params = self.message_builder.parse_message(data)
                 if parsed_task_id == self.message_builder.task_id.HAND_SHAKE:
-                    self.update_gui_state(self.GUI_STATE_VALUES.COMMS_OPEN)
-                    self.communication_socket.open_socket(parsed_params[0], int(parsed_params[1]))
-                    
+                    self.data_receiver_socket.open_socket(parsed_params[0], int(parsed_params[1]))
+
                     template_addr = '.'.join(parsed_params[0].split('.')[:3])
-                    reply = self.message_builder.build_initial_handshake(*self.communication_socket.getCommunicationAddress())
-                    self.communication_socket.send_message(reply)
+                    reply = self.message_builder.build_initial_handshake(*self.data_receiver_socket.getCommunicationAddress())
+                    udp_socket.sendto(reply, (parsed_params[0], int(parsed_params[1])))
+                    print(f"Sent reply: {reply}")
+
                     self.board_ip = parsed_params[0]
                     self.board_port = parsed_params[1]
 
-                    
-                    # self.communication_socket.send_message(self.message_builder.build_alive_message())
-                    self.update_led_status(LED_SOCKET_WAITING)
+                    self.update_gui_state(self.GUI_STATE_VALUES.COMMS_OPEN)
+                    self.search_button.setText("Disconnect from board")
+                    self.update_led_status(LED_SOCKET_OPEN)
             udp_socket.detach()
             udp_socket.close()
+            del udp_socket
+        
+        elif self.GUI_STATE != self.GUI_STATE_VALUES.INIT:
+            self.update_gui_state(self.GUI_STATE_VALUES.INIT)
+            self.search_button.setText("Connect to board")
+            self.update_led_status(LED_SOCKET_CLOSE)
+            self.board_ip = None
+            self.board_port = None
+            self.data_receiver_socket.close_socket()
+            self.communication_socket.close_socket()
 
     @Slot()
     def new_message_from_the_board(self, parsed_message: tuple):
@@ -271,7 +297,6 @@ class MainInterface(QMainWindow):
         if task_id == self.message_builder.task_id.PREPARE_AQUISITION:
             if self.GUI_STATE == self.GUI_STATE_VALUES.PREPARE_ACQ:
                 self.update_gui_state(self.GUI_STATE_VALUES.RECV_DATA)
-                self.stop_button.setEnabled(True)
                 # Launch the DataReceiverSocket
                 self.data_receiver_socket.open_socket(params[0], int(params[1]))
                 if self.data_receiver_socket.state == QAbstractSocket.ConnectedState:
@@ -281,7 +306,6 @@ class MainInterface(QMainWindow):
         
         elif task_id == self.message_builder.task_id.STOP_ACQUISITION:
             if self.GUI_STATE == self.GUI_STATE_VALUES.RECV_DATA:
-                self.stop_button.setEnabled(False)
                 self.data_receiver_socket.close_socket()
                 self.update_gui_state(self.GUI_STATE_VALUES.COMMS_OPEN)
 
@@ -298,26 +322,47 @@ class MainInterface(QMainWindow):
     def update_plot(self, new_data_sample):
         task_id, num_params, data_vector = new_data_sample
         if task_id == self.message_builder.task_id.DATA_SAMPLE:
-            acc_vector = data_vector[:3]
-            acc_timestamp = data_vector[-1]
+            data_vector = np.asarray([d.toFloat()[0] for d in data_vector])
+            acc_vector = data_vector[1:]
+            acc_timestamp = data_vector[0] / 1000.0
             total_acc = np.linalg.norm(np.asarray(acc_vector))
 
             self.data_connector_x.cb_append_data_point(acc_vector[0], acc_timestamp)
             self.data_connector_y.cb_append_data_point(acc_vector[1], acc_timestamp)
             self.data_connector_z.cb_append_data_point(acc_vector[2], acc_timestamp)
             self.data_connector_acc.cb_append_data_point(total_acc, acc_timestamp)
+            self.data_connector_acc_scatter.cb_append_data_point(total_acc, acc_timestamp)
 
+            self.max_x = acc_vector[0] if acc_vector[0] > self.max_x else self.max_x
+            self.max_y = acc_vector[1] if acc_vector[1] > self.max_y else self.max_y
+            self.max_z = acc_vector[2] if acc_vector[2] > self.max_z else self.max_z
+            self.max_acc = total_acc if total_acc > self.max_acc else self.max_acc
+
+            self.max_values_boxes["X"].setText(f"{self.max_x}")
+            self.max_values_boxes["Y"].setText(f"{self.max_y}")
+            self.max_values_boxes["Z"].setText(f"{self.max_z}")
+            self.max_values_boxes["ACC"].setText(f"{self.max_acc}")
+
+            for l in zip(["X", "Y", "Z", "ACC"], ()):
+                self.max_values_boxes[l].setText()
             print(f"TS: {acc_timestamp} [{acc_vector}] {total_acc:.3f} m/s**2")
 
     @Slot()
-    def start_acquisition(self):
-        if self.GUI_STATE == self.GUI_STATE_VALUES.COMMS_OPEN:
-            acq_length = None
-            if self.acquisition_length.text() != "":
-                acq_length = int(self.acquisition_length.text())
-            msg = self.message_builder.build_prepare_acquisition_message(acq_length)
-            self.communication_socket.send_message(msg)
-            self.update_gui_state(self.GUI_STATE_VALUES.PREPARE_ACQ)
+    def start_stop_acquisition(self):
+        if self.start_stop_button.isChecked():
+            self.data_connector_x.resume()
+            self.data_connector_y.resume()
+            self.data_connector_z.resume()
+            self.data_connector_acc.resume()
+            self.data_connector_acc_scatter.resume()
+            self.start_stop_button.setText("Stop")
+        elif not self.start_stop_button.isChecked():
+            self.data_connector_x.pause()
+            self.data_connector_y.pause()
+            self.data_connector_z.pause()
+            self.data_connector_acc.pause()
+            self.data_connector_acc_scatter.pause()
+            self.start_stop_button.setText("Start")
 
     @Slot()
     def stop_acquisition(self):
@@ -338,7 +383,59 @@ class MainInterface(QMainWindow):
         print(f"New state: {old_state} -> {new_state}")
         self.GUI_STATE = new_state
         # TODO: Implement a new_state check
+
+    def export_data(self):
+        assert len(self.data_connector_x.x), "Nothing to save"
+        button_state_backup = self.start_stop_button.isChecked()
+        self.start_stop_button.setChecked(False)
+        self.start_stop_button.pressed.emit(False)
+
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save data to", os.path.expanduser("~"), "Supported formats (*.json, *.csv)")
+        extension = file_path.split(".")[-1]
+        
+        with open(file_path, "w") as f:
+            if extension.lower() == "json":
+                data = {
+                    "max_x": self.max_x,
+                    "max_y": self.max_y,
+                    "max_z": self.max_z,
+                    "max_acc": self.max_acc,
+                    "time_ms": np.asanyarray(self.data_connector_x.x).tolist(),
+                    "x": np.asanyarray(self.data_connector_x.y).tolist(),
+                    "y": np.asanyarray(self.data_connector_y.y).tolist(),
+                    "z": np.asanyarray(self.data_connector_z.y).tolist(),
+                    "acc": np.asanyarray(self.data_connector_acc.y).tolist(),
+                }
+                json.dump(data, f)
+            elif extension.lower() == "csv":
+                csv_writer = csv.writer(f, delimiter=";")
+                csv_writer.writerow(["time_ms", "x", "y", "z", "acc"])
+                csv_writer.writerows([[t, x, y, z, acc] for (t, x, y, z, acc) in zip(self.data_connector_x.x,
+                                                                                     self.data_connector_x.y,
+                                                                                     self.data_connector_y.y,
+                                                                                     self.data_connector_z.y,
+                                                                                     self.data_connector_acc.y)])
+            else:
+                raise ValueError(f"Unknown extesion {extension}")
             
+        self.start_stop_button.isCheckable(button_state_backup)
+        self.start_stop_button.toggled.emit(button_state_backup)
+
+    def clear_plot(self):
+        self.data_connector_x.clear()
+        self.data_connector_y.clear()
+        self.data_connector_z.clear()
+        self.data_connector_acc.clear()
+        self.data_connector_acc_scatter.clear()
+        self.max_x = -100
+        self.max_y = -100
+        self.max_z = -100
+        self.max_acc = -100
+        self.max_values_boxes["X"].setText("")
+        self.max_values_boxes["Y"].setText("")
+        self.max_values_boxes["Z"].setText("")
+        self.max_values_boxes["ACC"].setText("")
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
