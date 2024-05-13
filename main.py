@@ -22,10 +22,18 @@ import json
 import csv
 
 import sys
-sys.path.insert(0, './src')
-from src.workers import Worker
+# from src.workers import Worker
 from src.communication_tools import CommunicationSocket, MessageBuilder
 from src.constants import *
+
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 
 def get_computer_IP(template_ip: str) -> str:
@@ -61,7 +69,7 @@ class MainInterface(QMainWindow):
         self.update_gui_state(self.GUI_STATE_VALUES.INIT)
 
         self.setWindowTitle("KickTracker")
-        self.setWindowIcon(QIcon("assets/icon.svg"))
+        self.setWindowIcon(QIcon(resource_path(os.path.join(".", "assets", "icon.svg"))))
 
         plotter_layout = self._build_plotter_layout()
         data_control_gb = self._build_data_control_group_box()

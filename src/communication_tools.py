@@ -1,7 +1,7 @@
 from PySide2.QtCore import QObject, QTimer, Signal, Slot, QThread
 from PySide2.QtNetwork import QAbstractSocket, QTcpSocket, QUdpSocket
 from typing import Union
-from constants import *
+from src.constants import *
 from enum import Enum
 
 
