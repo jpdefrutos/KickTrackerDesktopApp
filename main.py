@@ -450,10 +450,10 @@ class MainInterface(QMainWindow):
         with open(file_path, "w") as f:
             if extension.lower() == "json":
                 data = {
-                    "max_x": self.max_x,
-                    "max_y": self.max_y,
-                    "max_z": self.max_z,
-                    "max_acc": self.max_acc,
+                    "max_x": self.max_x / self.units_multiplier,
+                    "max_y": self.max_y / self.units_multiplier,
+                    "max_z": self.max_z / self.units_multiplier,
+                    "max_acc": self.max_acc / self.units_multiplier,
                     "time_ms": np.asanyarray(self.data_connector_x.x).tolist(),
                     "x": np.asanyarray(self.data_connector_x.y).tolist(),
                     "y": np.asanyarray(self.data_connector_y.y).tolist(),
