@@ -67,13 +67,15 @@ class MainInterface(QMainWindow):
         data_control_gb = self._build_data_control_group_box()
         acquisition_control_gb = self._build_acquisition_control_group_box()
         comms_control_gb = self._build_communication_group_box()
+        calibration_contrl_gb = self._build_calibration_group_box()
 
         # Base layout
         base_layout = QGridLayout()
-        base_layout.addLayout(plotter_layout, 0, 0, 3, 2)
+        base_layout.addLayout(plotter_layout, 0, 0, 4, 2)
         base_layout.addWidget(data_control_gb, 0, 2, 1, 1)
         base_layout.addWidget(acquisition_control_gb, 1, 2, 1, 1)
-        base_layout.addWidget(comms_control_gb, 2, 2, 1, 1)
+        base_layout.addWidget(calibration_contrl_gb,2, 2, 1, 1)
+        base_layout.addWidget(comms_control_gb, 3, 2, 1, 1)
 
         # Threads
         self.threadpool = QThreadPool()
@@ -90,13 +92,13 @@ class MainInterface(QMainWindow):
 
         self.data_receiver_socket = CommunicationSocket(socket_type="UDP")
         self.data_receiver_socket.new_message_signal.connect(self.update_plot)
-
-        self.data_receiver = CommunicationSocket(socket_type="UDP")
         
         self.max_x = -100
         self.max_y = -100
         self.max_z = -100
         self.max_acc = -100
+
+        self.units_multiplier = 1
 
     def _build_acquisition_control_group_box(self) -> QGroupBox:
         group_box = QGroupBox("Acquisition", parent=self)
@@ -105,7 +107,7 @@ class MainInterface(QMainWindow):
         self.start_stop_button.setMaximumWidth(self.menu_width)
         self.start_stop_button.setEnabled(False)
         self.start_stop_button.setCheckable(True)
-        self.start_stop_button.pressed.connect(self.start_stop_acquisition)
+        self.start_stop_button.toggled.connect(self.start_stop_acquisition)
 
         length_title = QLabel('Timer:', parent=group_box)
         length_title.setMaximumWidth(length_title.sizeHint().width())
@@ -125,6 +127,46 @@ class MainInterface(QMainWindow):
 
         group_box.setLayout(layout)
         return group_box
+
+    def _build_calibration_group_box(self) -> QGroupBox:
+        group_box = QGroupBox("Caibration", parent=self)
+
+        board_weight_lbl = QLabel(parent=group_box)
+        board_weight_lbl.setText("Board weight (g)")
+        board_weight_lbl.setMaximumWidth(board_weight_lbl.sizeHint().width())
+
+        self.board_weight = QLineEdit(parent=group_box)
+        self.board_weight.setText("90")
+        self.board_weight.setEnabled(True)
+        self.board_weight.setMaximumWidth(self.menu_width - board_weight_lbl.sizeHint().width())
+        
+        support_weight_lbl = QLabel(parent=group_box)
+        support_weight_lbl.setText("Support weight (g)")
+        support_weight_lbl.setMaximumWidth(support_weight_lbl.sizeHint().width())
+
+        self.support_weight = QLineEdit(parent=group_box)
+        self.support_weight.setText("400")
+        self.support_weight.setEnabled(True)
+        self.support_weight.setMaximumWidth(self.menu_width - support_weight_lbl.sizeHint().width())
+
+        self.show_force = QRadioButton("Show max force", parent=group_box)
+        self.show_force.toggled.connect(self.toggle_units)
+
+        layout_weights = QGridLayout()
+        layout_weights.addWidget(board_weight_lbl, 0, 0)
+        layout_weights.addWidget(self.board_weight, 0, 1)
+        layout_weights.addWidget(support_weight_lbl, 1, 0)
+        layout_weights.addWidget(self.support_weight, 1, 1)
+
+        layout = QVBoxLayout()
+        layout.addLayout(layout_weights)
+        layout.addWidget(self.show_force)
+        layout.setSizeConstraint(QLayout.SetMaximumSize)
+        layout.addStretch(1)
+
+        group_box.setLayout(layout)
+        return group_box
+        
 
     def _build_communication_group_box(self) -> QGroupBox:
         group_box = QGroupBox("Communication", parent=self)
@@ -448,6 +490,22 @@ class MainInterface(QMainWindow):
         self.max_values_boxes["Z"].setText("")
         self.max_values_boxes["ACC"].setText("")
 
+    def toggle_units(self):
+        if self.show_force.isChecked():
+            self.board_weight.setEnabled(False)
+            self.support_weight.setEnabled(False)
+
+            total_weight = (float(self.board_weight.text()) + float(self.support_weight.text())) / 1000
+            self.units_multiplier = total_weight
+
+        elif not self.show_force.isChecked():
+            total_weight = (float(self.board_weight.text()) + float(self.support_weight.text())) / 1000
+            self.units_multiplier = 1
+
+            self.board_weight.setEnabled(True)
+            self.support_weight.setEnabled(True)
+        else:
+            raise ValueError("Something is not right with the QRadiusButton")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
