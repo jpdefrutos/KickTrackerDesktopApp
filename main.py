@@ -1,6 +1,7 @@
 from PySide2.QtCore import Qt, QThreadPool, Slot
 from PySide2.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QSlider, QRadioButton, QLabel, QFileDialog, QLayout, QGroupBox
 from PySide2.QtNetwork import QAbstractSocket
+from PySide2.QtGui import QIcon
 
 from tqdm import tqdm
 
@@ -59,7 +60,8 @@ class MainInterface(QMainWindow):
         self.board_port = None
         self.update_gui_state(self.GUI_STATE_VALUES.INIT)
 
-        self.setWindowTitle("Kick Sensor")
+        self.setWindowTitle("KickTracker")
+        self.setWindowIcon(QIcon("assets/icon.svg"))
 
         plotter_layout = self._build_plotter_layout()
         data_control_gb = self._build_data_control_group_box()
@@ -148,6 +150,10 @@ class MainInterface(QMainWindow):
         self.connection_led.setEnabled(False)
         self.update_led_status(LED_SOCKET_CLOSE)
 
+        self.power_off = QPushButton('Power off', parent=group_box)
+        self.power_off.setMaximumWidth(self.menu_width)
+        self.power_off.setEnabled(True)
+
         layout = QVBoxLayout()
         layout.addWidget(reminder)
         # layout.addWidget(self.ip_address_input, Qt.AlignCenter)
@@ -155,6 +161,7 @@ class MainInterface(QMainWindow):
         # layout.addWidget(self.connection_button)
         layout.addWidget(self.search_button, alignment=Qt.AlignCenter)
         layout.addWidget(self.connection_led, alignment=Qt.AlignHCenter)
+        layout.addWidget(self.power_off, alignment=Qt.AlignHCenter)
         layout.setSizeConstraint(QLayout.SetMaximumSize)
         layout.addStretch(1)
 
@@ -178,7 +185,7 @@ class MainInterface(QMainWindow):
                   Crosshair.TEXT_KWARGS: {"color": "green"},
                   Axis.TICK_FORMAT: Axis.TIME}
         time_axis = LiveAxis("bottom", **kwargs)
-        self.plot_widget = LivePlotWidget(parent=self, background=background, title="Acceleration", axisItem={"bottom": time_axis}, roll_on_tick=20)
+        self.plot_widget = LivePlotWidget(parent=self, background=background, title="Sensor data", axisItem={"bottom": time_axis}, roll_on_tick=20)
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel("bottom", "Time", units="ms")
         self.plot_widget.setLabel("left", "Acceleration", units="m/s**2")
@@ -192,6 +199,12 @@ class MainInterface(QMainWindow):
         self.plot_widget.setMinimumWidth(800)
         self.plot_widget.setMinimumHeight(600)
 
+        self.data_connector_x.pause()
+        self.data_connector_y.pause()
+        self.data_connector_z.pause()
+        self.data_connector_acc.pause()
+        self.data_connector_acc_scatter.pause()
+        
         layout = QVBoxLayout()
         layout.addWidget(self.plot_widget)
         return layout
@@ -201,9 +214,10 @@ class MainInterface(QMainWindow):
         
         max_values_layout = QGridLayout()
         self.max_values_boxes = dict()
-        for i, l in enumerate(["X", "Y", "Z", "ACC"]):
+        for i, (l, c) in enumerate([("X", "red"), ("Y", "green"), ("Z", "blue"), ("ACC", "black")]):
             lbl = QLabel(parent=group_box)
             lbl.setText(f"{l}: ")
+            lbl.setStyleSheet("QLabel {color :" + c + " ; }")
             lbl.setMaximumWidth(lbl.sizeHint().width())
 
             val = QLineEdit(parent=group_box)
@@ -319,7 +333,7 @@ class MainInterface(QMainWindow):
     @Slot()
     def update_plot(self, new_data_sample):
         task_id, num_params, data_vector = new_data_sample
-        if task_id == self.message_builder.task_id.DATA_SAMPLE:
+        if task_id == self.message_builder.task_id.DATA_SAMPLE and self.start_stop_button.isChecked():
             data_vector = np.asarray([d.toFloat()[0] for d in data_vector])
             acc_vector = data_vector[1:]
             acc_timestamp = data_vector[0] / 1000.0
@@ -336,10 +350,10 @@ class MainInterface(QMainWindow):
             self.max_z = acc_vector[2] if acc_vector[2] > self.max_z else self.max_z
             self.max_acc = total_acc if total_acc > self.max_acc else self.max_acc
 
-            self.max_values_boxes["X"].setText(f"{self.max_x}")
-            self.max_values_boxes["Y"].setText(f"{self.max_y}")
-            self.max_values_boxes["Z"].setText(f"{self.max_z}")
-            self.max_values_boxes["ACC"].setText(f"{self.max_acc}")
+            self.max_values_boxes["X"].setText(f"{self.max_x * self.units_multiplier}")
+            self.max_values_boxes["Y"].setText(f"{self.max_y * self.units_multiplier}")
+            self.max_values_boxes["Z"].setText(f"{self.max_z * self.units_multiplier}")
+            self.max_values_boxes["ACC"].setText(f"{self.max_acc * self.units_multiplier}")
 
             for l in zip(["X", "Y", "Z", "ACC"], ()):
                 self.max_values_boxes[l].setText()
@@ -386,7 +400,7 @@ class MainInterface(QMainWindow):
         assert len(self.data_connector_x.x), "Nothing to save"
         button_state_backup = self.start_stop_button.isChecked()
         self.start_stop_button.setChecked(False)
-        self.start_stop_button.pressed.emit(False)
+        self.start_stop_button.toggled.emit(False)
 
         file_path, _ = QFileDialog.getSaveFileName(self, "Save data to", os.path.expanduser("~"), "Supported formats (*.json, *.csv)")
         extension = file_path.split(".")[-1]
